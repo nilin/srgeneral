@@ -7,7 +7,7 @@ import numpy as np
 from torch.utils import data
 from torchvision.datasets import MNIST
 import time
-
+from util import *
 
 def random_layer_params(m, n, key, scale=1e-2):
   w_key, b_key = random.split(key)
@@ -67,13 +67,17 @@ def loss(params, images, targets):
   preds = batched_predict(params, images)
   return -jnp.mean(preds * targets)
 
-@jit
-def update(params, x, y, gradfn=None):
+
+def get_update_fn(gradfn=None):
   if gradfn is None:
     gradfn=jax.grad(loss)
-  grads = gradfn(params, x, y)
-  return [(w - step_size * dw, b - step_size * db)
-          for (w, b), (dw, db) in zip(params, grads)]
+
+  def update(params, x, y):
+    grads = gradfn(params, x, y)
+    return [(w - step_size * dw, b - step_size * db)
+            for (w, b), (dw, db) in zip(params, grads)]
+  
+  return jax.jit(update)
 
 
 
@@ -82,11 +86,20 @@ def update(params, x, y, gradfn=None):
 jac=jax.jacrev(batched_predict)
 
 def newgradfn(params,images,targets):
-  O=jac(params,images)
+  O=flattenjac(jac(params,images))
+  
   T=jnp.inner(O,O)
   e=targets-batched_predict(images)
   dparam=O.T @ jnp.linalg.inv(T) @ e
   return dparam
+
+def flattenjac(T):
+  flatten_array=lambda A:jnp.reshape(A,A.shape[:2]+(-1,))
+  T=jax.tree_map(flatten_array,T)
+  breakpoint()
+  return T
+
+
 
 #
 #predgrad=jax.grad(predict)
@@ -161,6 +174,8 @@ test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
 
 
 # ## Training Loop
+
+update=get_update_fn(newgradfn)
 
 for epoch in range(num_epochs):
   start_time = time.time()
