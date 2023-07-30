@@ -39,9 +39,9 @@ def init_network_params(sizes, key):
 
 #layer_sizes = [784, 512, 512, 10]
 layer_sizes = [784, 128, 128, 10]
-step_size = 0.3
+step_size = 0.1
 num_epochs = 8
-batch_size = 16
+batch_size = 8
 n_targets = 10
 params = init_network_params(layer_sizes, random.PRNGKey(0))
 
@@ -109,19 +109,19 @@ jac=jax.jacrev(batched_predict)
 def newgradfn(params,images,targets):
 
   O=jac(params,images)
+
+  # make T'
   O_=flattenjac(O,batchdims=2)
   O_=jnp.reshape(O_,(-1,O_.shape[-1]))
   T=jnp.inner(O_,O_)
 
+  l,v=jnp.linalg.eigh(T)
+  valid=l>jnp.quantile(l,.6)
+  inv=(1/l)*valid
+  invT=v*inv[None,:] @ v.T
+
   e=batched_predict(params,images)-targets
   e=jnp.ravel(e)
-
-  l,v=jnp.linalg.eigh(T)
-  valid=l>jnp.quantile(l,.2)
-  inv=(1/l)*valid
-
-  invT=v*inv[None,:] @ v.T
-  testT=v*l[None,:] @ v.T
 
   xwise_grads=invT @ e
 
@@ -198,12 +198,26 @@ test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
 update=get_update_fn(newgradfn)
 #update=get_update_fn()
 
+import matplotlib.pyplot as plt
+losses=[]
+accuracies=[]
+
 for epoch in range(num_epochs):
   start_time = time.time()
   for i, (x, y) in enumerate(training_generator):
     y = one_hot(y, n_targets)
     params, aux = update(params, x, y)
-    print(jnp.linalg.norm(aux))
+    losses.append(jnp.linalg.norm(aux))
+    accuracies.append(accuracy(params, x, y))
+
+    print(losses[-1])
+    if i%100==0:
+      fig,axs=plt.subplots(2)
+      axs[0].plot(losses)
+      axs[1].plot(accuracies)
+      plt.savefig('loss.png')
+      plt.close()
+
   epoch_time = time.time() - start_time
 
   train_acc = accuracy(params, train_images, train_labels)
