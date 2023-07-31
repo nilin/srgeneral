@@ -88,17 +88,33 @@ def accuracy(params, images, targets):
 ### new fake gradient method ###
 
 
-jac=jax.jacrev(batched_predict)
+jac=jax.jit(jax.jacrev(batched_predict))
 
 @jax.jit
-def newgradfn(params,images,targets):
-
-  O=jac(params,images)
-
-  # make T'
+def grammatrix(O):
   O_=flattenjac(O,batchdims=2)
   O_=jnp.reshape(O_,(-1,O_.shape[-1]))
-  T=jnp.inner(O_,O_)
+  return jnp.inner(O_,O_), O_
+
+#@jax.jit
+def newgradfn(params,images,targets):
+
+  t0=time.time()
+  O=jac(params,images)
+  t1=time.time()
+
+  # make T'
+  #O_=flattenjac(O,batchdims=2)
+  #O_=jnp.reshape(O_,(-1,O_.shape[-1]))
+  #T=jnp.inner(O_,O_)
+
+  T,O_=grammatrix(O)
+  t2=time.time()
+
+  print('jacobian O shape:',O_.shape)
+  print('jacobian O time:',t1-t0)
+  print('Gram matrix time:',t2-t1)
+
 
   l,v=jnp.linalg.eigh(T)
   valid=l>jnp.quantile(l,.6)
