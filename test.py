@@ -29,84 +29,51 @@ from torchvision.datasets import MNIST
 import optax
 import time
 import flax
-from flax import nn
+import flax.linen as nn
 from jax import random as rnd
 from util import *
+from jax.tree_util import tree_flatten, tree_unflatten, tree_map
 
-def random_layer_params(m, n, key, scale=1e-2):
-  w_key, b_key = random.split(key)
-  return scale * random.normal(w_key, (n, m)), scale * random.normal(b_key, (n,))
 
-def init_network_params(sizes, key):
-  keys = random.split(key, len(sizes))
-  return [random_layer_params(m, n, k) for m, n, k in zip(sizes[:-1], sizes[1:], keys)]
-
-#layer_sizes = [784, 512, 512, 10]
-layer_sizes = [784, 128, 128, 10]
-step_size = 0.1
+rate = 0.1
 num_epochs = 8
 batch_size = 8
 n_targets = 10
-params = init_network_params(layer_sizes, random.PRNGKey(0))
 
 
+class Model(nn.Module):
+  @nn.compact
+  def __call__(self, x):
+    x = jnp.reshape(x,x.shape[:-1]+(28,28,1))
+    x = nn.Conv(features=8, strides=2, kernel_size=(3, 3))(x)
+    x = nn.LayerNorm()(x)
+    x = nn.relu(x)
+    x = nn.Conv(features=16, strides=2, kernel_size=(3, 3))(x)
+    x = nn.LayerNorm()(x)
+    x = nn.relu(x)
+    x = jnp.reshape(x,x.shape[:-3]+(-1,))
+    x = nn.Dense(features=512)(x)
+    x = nn.LayerNorm()(x)
+    x = nn.relu(x)
+    x = nn.Dense(features=10)(x)
+
+    #x = nn.LayerNorm()(x)
+    x = nn.softmax(x)
+
+    #x = nn.log_softmax(x)
+    #x = x-jnp.mean(x)+1/n_targets
+    return x
+
+model=Model()
+params=model.init(rnd.PRNGKey(0), jnp.ones((1,784)))
 
 
-
-
-# ## Auto-batching predictions
-# 
-# Let us first define our prediction function. Note that we're defining this for a _single_ image example. We're going to use JAX's `vmap` function to automatically handle mini-batches, with no performance penalty.
-
-
-def relu(x):
-  return jnp.maximum(0, x)
-
-def predict(params, image):
-  # per-example predictions
-  activations = image
-  for w, b in params[:-1]:
-    outputs = jnp.dot(w, activations) + b
-    activations = relu(outputs)
-
-  final_w, final_b = params[-1]
-  logits = jnp.dot(final_w, activations) + final_b
-  return logits - logsumexp(logits)
-
-
-
-
-
-#class Model(flax.nn.Module):
-#  def apply(self, x):
-#    x = jnp.reshape(x,(28,28))
-#    x = nn.Conv(x, features=32, step_size=2, kernel_size=(3, 3))
-#    x = flax.nn.relu(x)
-#    x = nn.Conv(x, features=32, step_size=2, kernel_size=(3, 3))
-#    x = flax.nn.relu(x)
-#    x = jnp.reshape(x,x.shape[:-3]+(-1,))
-#    x = flax.nn.Dense(x, features=10)
-#    x = flax.nn.log_softmax(x)
-#    return x
-#
-#model=Model()
-#params=model.init(rnd.PRNGKey(0), jnp.ones((1,784)))
-
-
-
-
+#batched_predict = vmap(model.apply, in_axes=(None, 0))
+batched_predict = model.apply
 random_flattened_images = random.normal(random.PRNGKey(1), (10, 28 * 28))
-
-# Make a batched version of the `predict` function
-batched_predict = vmap(predict, in_axes=(None, 0))
-
-# `batched_predict` has the same call signature as `predict`
-batched_preds = batched_predict(params, random_flattened_images)
-print(batched_preds.shape)
 
 
 def one_hot(x, k, dtype=jnp.float32):
-  """Create a one-hot encoding of x of size k."""
   return jnp.array(x[:, None] == jnp.arange(k), dtype)
 
 def accuracy(params, images, targets):
@@ -114,30 +81,16 @@ def accuracy(params, images, targets):
   predicted_class = jnp.argmax(batched_predict(params, images), axis=1)
   return jnp.mean(predicted_class == target_class)
 
-def loss(params, images, targets):
-  preds = batched_predict(params, images)
-  return -jnp.mean(preds * targets)
 
+###########################################################################
 
-def get_update_fn(gradfn=None):
-  if gradfn is None:
-    def gradfn(*args):
-      v,g=jax.value_and_grad(loss)(*args)
-      return g,v
+###########################################################################
+### new fake gradient method ###
 
-  def update(params, x, y):
-    grads,aux = gradfn(params, x, y)
-    return [(w - step_size * dw, b - step_size * db)
-            for (w, b), (dw, db) in zip(params, grads)], aux
-  
-  return jax.jit(update)
-
-
-
-### new method ###
 
 jac=jax.jacrev(batched_predict)
 
+@jax.jit
 def newgradfn(params,images,targets):
 
   O=jac(params,images)
@@ -171,10 +124,13 @@ def flattenjac(T,batchdims):
   T=jnp.concatenate(T,axis=-1)
   return T
 
-### end new method ###
+gradfn=newgradfn
 
+### end new fake gradient method ###
+###########################################################################
 
-# ## Data Loading with PyTorch
+###########################################################################
+# Data Loading with PyTorch
 
 
 def numpy_collate(batch):
@@ -223,20 +179,26 @@ test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_d
 test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
 
 
-# ## Training Loop
+# End data loading
+###########################################################################
+
+###########################################################################
+# Training Loop
+
 
 import sys
 import matplotlib.pyplot as plt
 
+@jax.jit
+def update(params,grads,rate):
+  return tree_map(lambda p,g:p-rate*g,params,grads)
+
+
+
 #import kfac_jax
 #kfac_jax.Optimizer
 
-if 'old' in sys.argv:
-  update=get_update_fn()
-  mode='old'
-else:
-  update=get_update_fn(newgradfn)
-  mode='new'
+mode='new'
 
 losses=[]
 accuracies=[]
@@ -245,7 +207,10 @@ for epoch in range(num_epochs):
   start_time = time.time()
   for i, (x, y) in enumerate(training_generator):
     y = one_hot(y, n_targets)
-    params, aux = update(params, x, y)
+
+    grads, aux = gradfn(params, x, y)
+    params = update(params, grads, rate)
+
     losses.append(aux)
     accuracies.append(accuracy(params, x, y))
 
@@ -266,7 +231,3 @@ for epoch in range(num_epochs):
   print("Epoch {} in {:0.2f} sec".format(epoch, epoch_time))
   print("Training set accuracy {}".format(train_acc))
   print("Test set accuracy {}".format(test_acc))
-
-
-# We've now used the whole of the JAX API: `grad` for derivatives, `jit` for speedups and `vmap` for auto-vectorization.
-# We used NumPy to specify all of our computation, and borrowed the great data loaders from PyTorch, and ran the whole thing on the GPU.
