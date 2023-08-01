@@ -43,7 +43,7 @@ n_targets = 10
 
 class Model(nn.Module):
   @nn.compact
-  def __call__(self, x):
+  def __call__(self, x, probs=False):
     x = jnp.reshape(x,x.shape[:-1]+(28,28,1))
     x = nn.Conv(features=8, strides=2, kernel_size=(3, 3))(x)
     x = nn.LayerNorm()(x)
@@ -56,21 +56,19 @@ class Model(nn.Module):
     x = nn.LayerNorm()(x)
     x = nn.relu(x)
     x = nn.Dense(features=10)(x)
-
-    #x = nn.LayerNorm()(x)
-    x = nn.softmax(x)
-
-    #x = nn.log_softmax(x)
-    #x = x-jnp.mean(x)+1/n_targets
-    return x
+    
+    if probs:
+      return nn.softmax(x)
+    else:
+      return nn.log_softmax(x)
 
 model=Model()
-params=model.init(rnd.PRNGKey(0), jnp.ones((1,784)))
 
 
-#batched_predict = vmap(model.apply, in_axes=(None, 0))
 batched_predict = model.apply
-random_flattened_images = random.normal(random.PRNGKey(1), (10, 28 * 28))
+dummy_imgs = random.normal(random.PRNGKey(1), (batch_size, 28 * 28))
+dummy_labels = random.normal(random.PRNGKey(1), (batch_size, n_targets))
+params=model.init(rnd.PRNGKey(0), dummy_imgs)
 
 
 def one_hot(x, k, dtype=jnp.float32):
@@ -88,40 +86,25 @@ def accuracy(params, images, targets):
 ### new fake gradient method ###
 
 
-jac=jax.jit(jax.jacrev(batched_predict))
+jac=jax.jacrev(batched_predict)
 
 @jax.jit
-def grammatrix(O):
-  O_=flattenjac(O,batchdims=2)
-  O_=jnp.reshape(O_,(-1,O_.shape[-1]))
-  return jnp.inner(O_,O_), O_
-
-#@jax.jit
 def newgradfn(params,images,targets):
 
-  t0=time.time()
   O=jac(params,images)
-  t1=time.time()
 
   # make T'
-  #O_=flattenjac(O,batchdims=2)
-  #O_=jnp.reshape(O_,(-1,O_.shape[-1]))
-  #T=jnp.inner(O_,O_)
-
-  T,O_=grammatrix(O)
-  t2=time.time()
-
-  print('jacobian O shape:',O_.shape)
-  print('jacobian O time:',t1-t0)
-  print('Gram matrix time:',t2-t1)
-
+  O_=flattenjac(O,batchdims=2)
+  O_=jnp.reshape(O_,(-1,O_.shape[-1]))
+  T=jnp.inner(O_,O_)
 
   l,v=jnp.linalg.eigh(T)
   valid=l>jnp.quantile(l,.6)
   inv=(1/l)*valid
   invT=v*inv[None,:] @ v.T
 
-  e=batched_predict(params,images)-targets
+  preds=batched_predict(params,images)
+  e=preds-targets
   e=jnp.ravel(e)
 
   xwise_grads=invT @ e
@@ -131,7 +114,8 @@ def newgradfn(params,images,targets):
     D=jnp.moveaxis(D,0,-1)
     return D @ xwise_grads
 
-  return jax.tree_map(contract,O), jnp.linalg.norm(e)
+  #return jax.tree_map(contract,O), dict(loss=jnp.linalg.norm(e))
+  return jax.tree_map(contract,O), dict(loss=-jnp.mean(preds*targets))
 
 def flattenjac(T,batchdims):
   flatten_array=lambda A:jnp.reshape(A,A.shape[:batchdims]+(-1,))
@@ -204,17 +188,46 @@ test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
 
 import sys
 import matplotlib.pyplot as plt
+import pickle
 
-@jax.jit
-def update(params,grads,rate):
-  return tree_map(lambda p,g:p-rate*g,params,grads)
+if 'new' in sys.argv:
+  mode='new'
+elif 'kfac' in sys.argv:
+  mode='kfac'
+else:
+  print('usage: python train.py [new|kfac]')
+  quit()
 
+if mode=='new':
 
+  @jax.jit
+  def update(params,grads,rate):
+    return tree_map(lambda p,g:p-rate*g,params,grads)
+  
+if mode=='kfac':
+  import kfac_jax
 
-#import kfac_jax
-#kfac_jax.Optimizer
+  def loss(params, xy):
+    x,y=xy
+    logits = batched_predict(params, x)
+    kfac_jax.register_softmax_cross_entropy_loss(logits, y)
+    return -jnp.mean(logits * y)
 
-mode='new'
+  kfac_opt=kfac_jax.Optimizer(
+    value_and_grad_func=jax.value_and_grad(loss),
+    l2_reg=.001,
+    value_func_has_aux=False,
+    value_func_has_state=False,
+    value_func_has_rng=False,
+    use_adaptive_learning_rate=True,
+    use_adaptive_momentum=True,
+    use_adaptive_damping=True,
+    initial_damping=1.0,
+    multi_device=False,
+  )
+  optstate=kfac_opt.init(params,rnd.PRNGKey(0),(dummy_imgs,dummy_labels))
+  key=rnd.PRNGKey(0)
+
 
 losses=[]
 accuracies=[]
@@ -225,18 +238,37 @@ for epoch in range(num_epochs):
     y = one_hot(y, n_targets)
 
     grads, aux = gradfn(params, x, y)
-    params = update(params, grads, rate)
 
-    losses.append(aux)
+    if mode=='new':
+      params = update(params, grads, rate)
+
+    if mode=='kfac':
+      key=rnd.split(key)[0]
+      params,optstate,aux=kfac_opt.step(params,optstate,key,batch=(x,y),global_step_int=i)
+
+    losses.append(aux['loss'])
     accuracies.append(accuracy(params, x, y))
 
     print(losses[-1])
     if i%100==0:
+
+      with open('data_{}.pkl'.format(mode),'wb') as f:
+        pickle.dump((losses,accuracies),f)
+
       fig,axs=plt.subplots(2)
-      axs[0].plot(losses)
-      axs[1].plot(accuracies)
-      plt.xscale('log')
-      plt.title(mode)
+
+      for mode_ in ['new','kfac']:
+        try:
+          with open('data_{}.pkl'.format(mode_),'rb') as f:
+            losses_,accuracies_=pickle.load(f)
+          axs[0].plot(losses_,label=mode_)
+          axs[1].plot(accuracies_,label=mode_)
+          plt.xscale('log')
+          axs[0].legend()
+          axs[1].legend()
+        except:
+          print('no data for {}'.format(mode_))
+
       plt.savefig('loss.png')
       plt.close()
 
@@ -247,3 +279,55 @@ for epoch in range(num_epochs):
   print("Epoch {} in {:0.2f} sec".format(epoch, epoch_time))
   print("Training set accuracy {}".format(train_acc))
   print("Test set accuracy {}".format(test_acc))
+
+#  class Optimizer():
+#    def __init__(self,gradfn):
+#      self.gradfn=gradfn
+#
+#    def init(self,params,rng,*args):
+#      self.rng=rng
+#      self.args=args
+#      return params
+#
+#    def step(self,params,optstate,key,batch):
+#      grads,aux=self.gradfn(params,*batch)
+#      params=update(params,grads,rate)
+#      return params,optstate,aux
+  
+#
+#  losses=[]
+#  accuracies=[]
+#
+#
+#  for epoch in range(num_epochs):
+#    start_time = time.time()
+#    for i, (x, y) in enumerate(training_generator):
+#      y = one_hot(y, n_targets)
+#
+#      grads, aux = gradfn(params, x, y)
+#      #params = update(params, grads, rate)
+#
+#      accuracies.append(accuracy(params, x, y))
+#
+#      print(losses[-1])
+#      if i%100==0:
+#
+#        with open('data.pkl','wb') as f:
+#          pickle.dump((losses,accuracies),f
+#
+#        fig,axs=plt.subplots(2)
+#        plt.title(mode)
+#        axs[0].plot(losses)
+#        axs[1].plot(accuracies)
+#        plt.xscale('log')
+#        plt.savefig('loss.png')
+#        plt.close()
+#
+#    epoch_time = time.time() - start_time
+#
+#    train_acc = accuracy(params, train_images, train_labels)
+#    test_acc = accuracy(params, test_images, test_labels)
+#    print("Epoch {} in {:0.2f} sec".format(epoch, epoch_time))
+#    print("Training set accuracy {}".format(train_acc))
+#    print("Test set accuracy {}".format(test_acc))
+#
