@@ -120,51 +120,79 @@ gradfn=newgradfn
 ###########################################################################
 ### method with Gil's momentum scheme ###
 
+
+def batched_predict_restricted(params,images,targets):
+  prediction=batched_predict(params,images)
+  return jnp.sum(prediction*targets,axis=-1)
+
+jac_restricted=jax.jacrev(batched_predict_restricted)
+
 @jax.jit
 def newgradmomentum(params,images,targets,prevgrad):
 
-  O=jac(params,images)
+  O=jac_restricted(params,images,targets)
 
   # make T'
-  O_=flattenjac(O,batchdims=2)
-  O_=jnp.reshape(O_,(-1,O_.shape[-1]))
-  T=jnp.inner(O_,O_)
+  #O_=flattenjac(O,batchdims=2)
+  #O_=jnp.reshape(O_,(-1,O_.shape[-1]))
+  #T=jnp.inner(O_,O_)
+
+  breakpoint()
+
+  T=jnp.inner(O,O)
 
   l,v=jnp.linalg.eigh(T)
   valid=l>jnp.quantile(l,.6)
   inv=(1/l)*valid
   invT=v*inv[None,:] @ v.T
 
-  parallel=
-  complement=
+  return 0
 
-  out=(
-    0.1*minsr
-    +.9*parallel
-    +.99*complement
-  )
+# Gil's scheme
+#
+# Ohat_prev_grad = Ohat @ prev_grad
+# prev_grad_subspace = OhatT_Tinv @ Ohat_prev_grad
+# prev_grad_complement = prev_grad - prev_grad_subspace
+#
+# prev_grad_parallel = (
+#     min_sr_solution
+#     * (min_sr_solution @ prev_grad_subspace)
+#     / (min_sr_solution @ min_sr_solution)
+# )
+# prev_grad_orthogonal = prev_grad_subspace - prev_grad_parallel
 
+  #OhatT_Tinv=O @ invT
 
-  preds=batched_predict(params,images)
-  #e=preds-targets
+  #parallel=
+  #complement=
 
-  e=-targets*preds
+  #out=(
+  #  0.1*minsr
+  #  +.9*parallel
+  #  +.99*complement
+  #)
+
 
   #preds=batched_predict(params,images)
-  #e=-targets
+  ##e=preds-targets
 
-  e=jnp.ravel(e)
+  #e=-targets*preds
 
-  xwise_grads=invT @ e
+  ##preds=batched_predict(params,images)
+  ##e=-targets
 
-  def contract(D):
-    D=jnp.reshape(D,(-1,)+D.shape[2:])
-    D=jnp.moveaxis(D,0,-1)
-    return D @ xwise_grads
+  #e=jnp.ravel(e)
 
-  #return jax.tree_map(contract,O), dict(loss=jnp.mean(e**2))
-  #return jax.tree_map(contract,O), dict(loss=-jnp.mean(preds*targets))
-  return jax.tree_map(contract,O), dict(loss=jnp.sum(jnp.exp(preds)*targets))
+  #xwise_grads=invT @ e
+
+  #def contract(D):
+  #  D=jnp.reshape(D,(-1,)+D.shape[2:])
+  #  D=jnp.moveaxis(D,0,-1)
+  #  return D @ xwise_grads
+
+  ##return jax.tree_map(contract,O), dict(loss=jnp.mean(e**2))
+  ##return jax.tree_map(contract,O), dict(loss=-jnp.mean(preds*targets))
+  #return jax.tree_map(contract,O), dict(loss=jnp.sum(jnp.exp(preds)*targets))
 
 gradfn=newgradfn
 
