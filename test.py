@@ -1,23 +1,3 @@
-# based on mnist example from jax authors:
-##################################################
-
-# [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google/jax/blob/main/docs/notebooks/Neural_Network_and_Data_Loading.ipynb) [![Open in Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/google/jax/blob/main/docs/notebooks/Neural_Network_and_Data_Loading.ipynb)
-# 
-# **Copyright 2018 The JAX Authors.**
-# 
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-# 
-# https://www.apache.org/licenses/LICENSE-2.0
-# 
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-
-
 import jax.numpy as jnp
 from jax import grad, jit, vmap
 from jax import random
@@ -43,7 +23,7 @@ n_targets = 10
 
 class Model(nn.Module):
   @nn.compact
-  def __call__(self, x, probs=False):
+  def __call__(self, x, probs=False, raw=False):
     x = jnp.reshape(x,x.shape[:-1]+(28,28,1))
     x = nn.Conv(features=8, strides=2, kernel_size=(3, 3))(x)
     x = nn.LayerNorm()(x)
@@ -56,11 +36,7 @@ class Model(nn.Module):
     x = nn.LayerNorm()(x)
     x = nn.relu(x)
     x = nn.Dense(features=10)(x)
-    
-    if probs:
-      return nn.softmax(x)
-    else:
-      return nn.log_softmax(x)
+    return nn.log_softmax(x)
 
 model=Model()
 
@@ -103,8 +79,15 @@ def newgradfn(params,images,targets):
   inv=(1/l)*valid
   invT=v*inv[None,:] @ v.T
 
+
   preds=batched_predict(params,images)
   e=preds-targets
+
+  #e=-targets*preds
+
+  #preds=batched_predict(params,images)
+  #e=-targets
+
   e=jnp.ravel(e)
 
   xwise_grads=invT @ e
@@ -114,8 +97,9 @@ def newgradfn(params,images,targets):
     D=jnp.moveaxis(D,0,-1)
     return D @ xwise_grads
 
-  #return jax.tree_map(contract,O), dict(loss=jnp.linalg.norm(e))
-  return jax.tree_map(contract,O), dict(loss=-jnp.mean(preds*targets))
+  #return jax.tree_map(contract,O), dict(loss=jnp.mean(e**2))
+  #return jax.tree_map(contract,O), dict(loss=-jnp.mean(preds*targets))
+  return jax.tree_map(contract,O), dict(loss=jnp.sum(jnp.exp(preds)*targets))
 
 def flattenjac(T,batchdims):
   flatten_array=lambda A:jnp.reshape(A,A.shape[:batchdims]+(-1,))
@@ -128,6 +112,116 @@ gradfn=newgradfn
 
 ### end new fake gradient method ###
 ###########################################################################
+
+
+
+
+
+###########################################################################
+### method with Gil's momentum scheme ###
+
+
+def batched_predict_restricted(params,images,targets):
+  prediction=batched_predict(params,images)
+  return jnp.sum(prediction*targets,axis=-1)
+
+jac_restricted=jax.jacrev(batched_predict_restricted)
+
+@jax.jit
+def newgradmomentum(params,images,targets,prevgrad):
+
+  O=jac_restricted(params,images,targets)
+
+  # make T'
+  #O_=flattenjac(O,batchdims=2)
+  #O_=jnp.reshape(O_,(-1,O_.shape[-1]))
+  #T=jnp.inner(O_,O_)
+
+  breakpoint()
+
+  T=jnp.inner(O,O)
+
+  l,v=jnp.linalg.eigh(T)
+  valid=l>jnp.quantile(l,.6)
+  inv=(1/l)*valid
+  invT=v*inv[None,:] @ v.T
+
+  return 0
+
+# Gil's scheme
+#
+# Ohat_prev_grad = Ohat @ prev_grad
+# prev_grad_subspace = OhatT_Tinv @ Ohat_prev_grad
+# prev_grad_complement = prev_grad - prev_grad_subspace
+#
+# prev_grad_parallel = (
+#     min_sr_solution
+#     * (min_sr_solution @ prev_grad_subspace)
+#     / (min_sr_solution @ min_sr_solution)
+# )
+# prev_grad_orthogonal = prev_grad_subspace - prev_grad_parallel
+
+  #OhatT_Tinv=O @ invT
+
+  #parallel=
+  #complement=
+
+  #out=(
+  #  0.1*minsr
+  #  +.9*parallel
+  #  +.99*complement
+  #)
+
+
+  #preds=batched_predict(params,images)
+  ##e=preds-targets
+
+  #e=-targets*preds
+
+  ##preds=batched_predict(params,images)
+  ##e=-targets
+
+  #e=jnp.ravel(e)
+
+  #xwise_grads=invT @ e
+
+  #def contract(D):
+  #  D=jnp.reshape(D,(-1,)+D.shape[2:])
+  #  D=jnp.moveaxis(D,0,-1)
+  #  return D @ xwise_grads
+
+  ##return jax.tree_map(contract,O), dict(loss=jnp.mean(e**2))
+  ##return jax.tree_map(contract,O), dict(loss=-jnp.mean(preds*targets))
+  #return jax.tree_map(contract,O), dict(loss=jnp.sum(jnp.exp(preds)*targets))
+
+gradfn=newgradfn
+
+###########################################################################
+
+
+
+
+
+
+
+# based on mnist example from jax authors:
+##################################################
+
+# [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google/jax/blob/main/docs/notebooks/Neural_Network_and_Data_Loading.ipynb) [![Open in Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/google/jax/blob/main/docs/notebooks/Neural_Network_and_Data_Loading.ipynb)
+# 
+# **Copyright 2018 The JAX Authors.**
+# 
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+# https://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 
 ###########################################################################
 # Data Loading with PyTorch
@@ -192,6 +286,8 @@ import pickle
 
 if 'new' in sys.argv:
   mode='new'
+elif 'mew' in sys.argv:
+  mode='mew'
 elif 'kfac' in sys.argv:
   mode='kfac'
 else:
@@ -199,10 +295,14 @@ else:
   quit()
 
 if mode=='new':
-
   @jax.jit
   def update(params,grads,rate):
     return tree_map(lambda p,g:p-rate*g,params,grads)
+  
+if mode=='mew':
+  import optax
+  opt=optax.sgd(learning_rate=.01,momentum=.9)
+  optstate=opt.init(params)
   
 if mode=='kfac':
   import kfac_jax
@@ -242,6 +342,10 @@ for epoch in range(num_epochs):
     if mode=='new':
       params = update(params, grads, rate)
 
+    if mode=='mew':
+      updates, optstate = opt.update(grads, optstate)
+      params = optax.apply_updates(params, updates)
+
     if mode=='kfac':
       key=rnd.split(key)[0]
       params,optstate,aux=kfac_opt.step(params,optstate,key,batch=(x,y),global_step_int=i)
@@ -250,24 +354,46 @@ for epoch in range(num_epochs):
     accuracies.append(accuracy(params, x, y))
 
     print(losses[-1])
-    if i%100==0:
+    if i%100==0 and i>=100:
 
       with open('data_{}.pkl'.format(mode),'wb') as f:
         pickle.dump((losses,accuracies),f)
 
+    if i%100==0:
       fig,axs=plt.subplots(2)
+      ##fig,axs=plt.subplots(1)
 
-      for mode_ in ['new','kfac']:
+      for mode_ in ['new','mew','kfac']:
         try:
           with open('data_{}.pkl'.format(mode_),'rb') as f:
             losses_,accuracies_=pickle.load(f)
-          axs[0].plot(losses_,label=mode_)
-          axs[1].plot(accuracies_,label=mode_)
-          plt.xscale('log')
+
+          modelabel=mode_
+          if mode_=='mew':
+            modelabel='new with momentum'
+          axs[0].plot(losses_,label=modelabel)
+          axs[1].plot(accuracies_,label=modelabel)
           axs[0].legend()
           axs[1].legend()
+          plt.plot(accuracies_,label=modelabel)
+          plt.legend()
         except:
           print('no data for {}'.format(mode_))
+
+      #fig,axs=plt.subplots(3)
+
+      #for i_,mode_ in enumerate(['new','mew','kfac']):
+      #  try:
+      #    with open('data_{}.pkl'.format(mode_),'rb') as f:
+      #      losses_,accuracies_=pickle.load(f)
+
+      #    modelabel=mode_
+      #    if mode_=='mew':
+      #      modelabel='new with momentum'
+      #    axs[i_].plot(accuracies_[:800],label=modelabel)
+      #    axs[i_].legend()
+      #  except:
+      #    print('no data for {}'.format(mode_))
 
       plt.savefig('loss.png')
       plt.close()
@@ -279,55 +405,3 @@ for epoch in range(num_epochs):
   print("Epoch {} in {:0.2f} sec".format(epoch, epoch_time))
   print("Training set accuracy {}".format(train_acc))
   print("Test set accuracy {}".format(test_acc))
-
-#  class Optimizer():
-#    def __init__(self,gradfn):
-#      self.gradfn=gradfn
-#
-#    def init(self,params,rng,*args):
-#      self.rng=rng
-#      self.args=args
-#      return params
-#
-#    def step(self,params,optstate,key,batch):
-#      grads,aux=self.gradfn(params,*batch)
-#      params=update(params,grads,rate)
-#      return params,optstate,aux
-  
-#
-#  losses=[]
-#  accuracies=[]
-#
-#
-#  for epoch in range(num_epochs):
-#    start_time = time.time()
-#    for i, (x, y) in enumerate(training_generator):
-#      y = one_hot(y, n_targets)
-#
-#      grads, aux = gradfn(params, x, y)
-#      #params = update(params, grads, rate)
-#
-#      accuracies.append(accuracy(params, x, y))
-#
-#      print(losses[-1])
-#      if i%100==0:
-#
-#        with open('data.pkl','wb') as f:
-#          pickle.dump((losses,accuracies),f
-#
-#        fig,axs=plt.subplots(2)
-#        plt.title(mode)
-#        axs[0].plot(losses)
-#        axs[1].plot(accuracies)
-#        plt.xscale('log')
-#        plt.savefig('loss.png')
-#        plt.close()
-#
-#    epoch_time = time.time() - start_time
-#
-#    train_acc = accuracy(params, train_images, train_labels)
-#    test_acc = accuracy(params, test_images, test_labels)
-#    print("Epoch {} in {:0.2f} sec".format(epoch, epoch_time))
-#    print("Training set accuracy {}".format(train_acc))
-#    print("Test set accuracy {}".format(test_acc))
-#
