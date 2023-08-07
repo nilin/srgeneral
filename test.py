@@ -108,7 +108,6 @@ def flattenjac(T,batchdims):
   T=jnp.concatenate(T,axis=-1)
   return T
 
-gradfn=newgradfn
 
 ### end new fake gradient method ###
 ###########################################################################
@@ -128,25 +127,52 @@ def batched_predict_restricted(params,images,targets):
 jac_restricted=jax.jacrev(batched_predict_restricted)
 
 @jax.jit
-def newgradmomentum(params,images,targets,prevgrad):
+def newgradmomentum(params,images,targets,prev_grad):
 
   O=jac_restricted(params,images,targets)
+
+  def flattenjac(O):
+    O=jax.tree_map(lambda A:jnp.reshape(A,(A.shape[0],-1)),O)
+    O,_=jax.tree_flatten(O)
+    O=jnp.concatenate(O,axis=-1)
+    return O
 
   # make T'
   #O_=flattenjac(O,batchdims=2)
   #O_=jnp.reshape(O_,(-1,O_.shape[-1]))
   #T=jnp.inner(O_,O_)
 
-  breakpoint()
-
-  T=jnp.inner(O,O)
+  O_=flattenjac(O)
+  T=jnp.inner(O_,O_)
+  #breakpoint()
 
   l,v=jnp.linalg.eigh(T)
   valid=l>jnp.quantile(l,.6)
   inv=(1/l)*valid
   invT=v*inv[None,:] @ v.T
 
-  return 0
+  logprobs=jnp.sum(batched_predict(params,images)*targets,axis=-1)
+  e=-logprobs
+
+  ##e=preds-targets
+
+  #e=-targets*preds
+
+  ##preds=batched_predict(params,images)
+  ##e=-targets
+
+  #e=jnp.ravel(e)
+
+  xwise_grads=invT @ e
+
+  def contract(D):
+    #D=jnp.reshape(D,(-1,)+D.shape[2:])
+    D=jnp.moveaxis(D,0,-1)
+    return D @ xwise_grads
+  
+  out=jax.tree_map(contract,O)
+  #breakpoint()
+  return out, dict(loss=jnp.mean(e))
 
 # Gil's scheme
 #
@@ -194,7 +220,13 @@ def newgradmomentum(params,images,targets,prevgrad):
   ##return jax.tree_map(contract,O), dict(loss=-jnp.mean(preds*targets))
   #return jax.tree_map(contract,O), dict(loss=jnp.sum(jnp.exp(preds)*targets))
 
-gradfn=newgradfn
+def flattenjac2(T):
+  #flatten_array=lambda A:jnp.reshape(A,A.shape[:batchdims]+(-1,))
+  #flatten_array=lambda A: jnp.sum(A*targets,axis=-1)
+  T=jax.tree_map(jnp.ravel,T)
+  T,_=jax.tree_flatten(T)
+  T=jnp.concatenate(T,axis=-1)
+  return T
 
 ###########################################################################
 
@@ -284,25 +316,27 @@ import sys
 import matplotlib.pyplot as plt
 import pickle
 
-if 'new' in sys.argv:
-  mode='new'
-elif 'mew' in sys.argv:
-  mode='mew'
-elif 'kfac' in sys.argv:
-  mode='kfac'
-else:
-  print('usage: python train.py [new|kfac]')
-  quit()
+#if 'new' in sys.argv:
+#  mode='new'
+#elif 'mew' in sys.argv:
+#  mode='mew'
+#elif 'kfac' in sys.argv:
+#  mode='kfac'
+#else:
+#  print('usage: python train.py [new|kfac]')
+#  quit()
+
+mode='new'
 
 if mode=='new':
   @jax.jit
   def update(params,grads,rate):
     return tree_map(lambda p,g:p-rate*g,params,grads)
   
-if mode=='mew':
-  import optax
-  opt=optax.sgd(learning_rate=.01,momentum=.9)
-  optstate=opt.init(params)
+#if mode=='mew':
+#  import optax
+#  opt=optax.sgd(learning_rate=.01,momentum=.9)
+#  optstate=opt.init(params)
   
 if mode=='kfac':
   import kfac_jax
@@ -331,13 +365,15 @@ if mode=='kfac':
 
 losses=[]
 accuracies=[]
+prevgrad=None
 
 for epoch in range(num_epochs):
   start_time = time.time()
   for i, (x, y) in enumerate(training_generator):
     y = one_hot(y, n_targets)
 
-    grads, aux = gradfn(params, x, y)
+    grads, aux = newgradmomentum(params, x, y ,prevgrad)
+    prevgrad=grads
 
     if mode=='new':
       params = update(params, grads, rate)
