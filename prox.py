@@ -254,6 +254,10 @@ prevgrad=tree_map(lambda x:0*x,params)
 for epoch in range(num_epochs):
   start_time = time.time()
   for i, (x, y) in enumerate(training_generator):
+
+    if y.shape!=(batch_size,):
+      continue
+
     y = one_hot(y, n_targets)
 
     if mode=='new':
