@@ -15,15 +15,15 @@ from util import *
 from jax.tree_util import tree_flatten, tree_unflatten, tree_map
 
 
-rate = 0.1
+rate = 0.2
 num_epochs = 8
-batch_size = 32
+batch_size = 64
 n_targets = 10
 
 
 class Model(nn.Module):
   @nn.compact
-  def __call__(self, x, probs=False, raw=False):
+  def __call__(self, x, mode='log'):
     x = jnp.reshape(x,x.shape[:-1]+(28,28,1))
     x = nn.Conv(features=8, strides=2, kernel_size=(3, 3))(x)
     x = nn.LayerNorm()(x)
@@ -36,7 +36,11 @@ class Model(nn.Module):
     x = nn.LayerNorm()(x)
     x = nn.relu(x)
     x = nn.Dense(features=10)(x)
-    return nn.log_softmax(x)
+    
+    if mode=='p':
+      return nn.softmax(x)
+    if mode=='log':
+      return nn.log_softmax(x)
 
 model=Model()
 
@@ -46,7 +50,7 @@ dummy_labels = random.normal(random.PRNGKey(1), (batch_size, n_targets))
 params=model.init(rnd.PRNGKey(0), dummy_imgs)
 
 def batched_predict_restricted(params,images,targets):
-  prediction=batched_predict(params,images)
+  prediction=batched_predict(params,images,mode='p')
   return jnp.sum(prediction*targets,axis=-1)
 
 jac_restricted=jax.jacrev(batched_predict_restricted)
@@ -83,8 +87,10 @@ def newgradmomentum(params,images,targets,prev_grad):
   inv=(1/l)*valid
   invT=v*inv[None,:] @ v.T
 
-  logits=jnp.sum(batched_predict(params,images)*targets,axis=-1)
-  p=jnp.exp(logits)
+  #logits=jnp.sum(batched_predict(params,images)*targets,axis=-1)
+  #p=jnp.exp(logits)
+  p=jnp.sum(batched_predict(params,images,mode='p')*targets,axis=-1)
+  logits=jnp.log(p)
   e=-(1-p)
 
 
@@ -269,7 +275,7 @@ for epoch in range(num_epochs):
         pickle.dump((losses,accuracies),f)
 
     if i%100==0:
-      fig,axs=plt.subplots(2)
+      #fig,axs=plt.subplots(2)
 
       for mode_ in ['new','kfac']:
         try:
@@ -277,10 +283,8 @@ for epoch in range(num_epochs):
             losses_,accuracies_=pickle.load(f)
 
           modelabel=mode_
-          axs[0].plot(losses_,label=modelabel)
-          axs[1].plot(accuracies_,label=modelabel)
-          axs[0].legend()
-          axs[1].legend()
+          plt.plot(accuracies_,label=modelabel)
+          plt.legend()
         except:
           print('no data for {}'.format(mode_))
 
