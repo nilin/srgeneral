@@ -15,7 +15,7 @@ from util import *
 from jax.tree_util import tree_flatten, tree_unflatten, tree_map
 
 
-rate = 0.2
+rate = 0.1
 num_epochs = 8
 batch_size = 64
 n_targets = 10
