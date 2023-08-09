@@ -40,12 +40,16 @@ class Model(nn.Module):
 
 model=Model()
 
-
 batched_predict = model.apply
 dummy_imgs = random.normal(random.PRNGKey(1), (batch_size, 28 * 28))
 dummy_labels = random.normal(random.PRNGKey(1), (batch_size, n_targets))
 params=model.init(rnd.PRNGKey(0), dummy_imgs)
 
+def batched_predict_restricted(params,images,targets):
+  prediction=batched_predict(params,images)
+  return jnp.sum(prediction*targets,axis=-1)
+
+jac_restricted=jax.jacrev(batched_predict_restricted)
 
 def one_hot(x, k, dtype=jnp.float32):
   return jnp.array(x[:, None] == jnp.arange(k), dtype)
@@ -54,110 +58,6 @@ def accuracy(params, images, targets):
   target_class = jnp.argmax(targets, axis=1)
   predicted_class = jnp.argmax(batched_predict(params, images), axis=1)
   return jnp.mean(predicted_class == target_class)
-
-
-###########################################################################
-
-###########################################################################
-### new fake gradient method ###
-#
-#
-#jac=jax.jacrev(batched_predict)
-#
-#@jax.jit
-#def newgradfn(params,images,targets):
-#
-#  O=jac(params,images)
-#
-#  def flattenjac(O,batchdims):
-#    flatten_array=lambda A:jnp.reshape(A,A.shape[:batchdims]+(-1,))
-#    O=jax.tree_map(flatten_array,O)
-#    O,_=jax.tree_flatten(O)
-#    O=jnp.concatenate(O,axis=-1)
-#    return O
-#
-#  # make T'
-#  O_=flattenjac(O,batchdims=2)
-#  O_=jnp.reshape(O_,(-1,O_.shape[-1]))
-#  T=jnp.inner(O_,O_)
-#
-#  l,v=jnp.linalg.eigh(T)
-#  valid=l>jnp.quantile(l,.6)
-#  inv=(1/l)*valid
-#  invT=v*inv[None,:] @ v.T
-#
-#
-#  preds=batched_predict(params,images)
-#  e=preds-targets
-#
-#  #e=-targets*preds
-#
-#  #preds=batched_predict(params,images)
-#  #e=-targets
-#
-#  e=jnp.ravel(e)
-#
-#  xwise_grads=invT @ e
-#
-#  def contract(D):
-#    D=jnp.reshape(D,(-1,)+D.shape[2:])
-#    D=jnp.moveaxis(D,0,-1)
-#    return D @ xwise_grads
-#
-#  #return jax.tree_map(contract,O), dict(loss=jnp.mean(e**2))
-#  #return jax.tree_map(contract,O), dict(loss=-jnp.mean(preds*targets))
-#  return jax.tree_map(contract,O), dict(loss=jnp.sum(jnp.exp(preds)*targets))
-
-
-### end new fake gradient method ###
-###########################################################################
-
-
-
-
-
-##################################################
-
-def batched_predict_restricted(params,images,targets):
-  prediction=batched_predict(params,images)
-  return jnp.sum(prediction*targets,axis=-1)
-
-jac_restricted=jax.jacrev(batched_predict_restricted)
-
-@jax.jit
-def newgrad(params,images,targets):
-
-  O=jac_restricted(params,images,targets)
-
-  def flattenjac(O):
-    O=jax.tree_map(lambda A:jnp.reshape(A,(A.shape[0],-1)),O)
-    O,_=jax.tree_flatten(O)
-    O=jnp.concatenate(O,axis=-1)
-    return O
-
-  O_=flattenjac(O)
-  T=jnp.inner(O_,O_)
-
-  l,v=jnp.linalg.eigh(T)
-  valid=l>jnp.quantile(l,.6)
-  inv=(1/l)*valid
-  invT=v*inv[None,:] @ v.T
-
-  logprobs=jnp.sum(batched_predict(params,images)*targets,axis=-1)
-  #e=logprobs
-  e=-jnp.ones_like(logprobs)
-
-  xwise_grads=invT @ e
-
-  def contract(D):
-    D=jnp.moveaxis(D,0,-1)
-    return D @ xwise_grads
-  
-  out=jax.tree_map(contract,O)
-  return out, dict(loss=-jnp.mean(logprobs))
-
-
-
 
 
 
@@ -183,11 +83,9 @@ def newgradmomentum(params,images,targets,prev_grad):
   inv=(1/l)*valid
   invT=v*inv[None,:] @ v.T
 
-  logprobs=jnp.sum(batched_predict(params,images)*targets,axis=-1)
-  p=jnp.exp(logprobs)
+  logits=jnp.sum(batched_predict(params,images)*targets,axis=-1)
+  p=jnp.exp(logits)
   e=-(1-p)
-  #e=logprobs
-  #e=-jnp.ones_like(logprobs)
 
 
 # Gil's momentum scheme
@@ -228,18 +126,10 @@ def newgradmomentum(params,images,targets,prev_grad):
     out_.append(jnp.reshape(block,sh[1:]))
     start=start+s
   
-  #return tree_unflatten(treeshape,out_), dict(loss=-jnp.mean(logprobs))
-  return tree_unflatten(treeshape,out_), dict(loss=1-jnp.mean(p))
-
-
+  return tree_unflatten(treeshape,out_),\
+  dict(loss=-jnp.mean(logits)/n_targets)
 
 ###########################################################################
-
-
-
-
-
-
 
 # based on mnist example from jax authors:
 ##################################################
@@ -295,7 +185,6 @@ class FlattenAndCast(object):
   def __call__(self, pic):
     return np.ravel(np.array(pic, dtype=jnp.float32))
 
-
 # Define our dataset, using torch datasets
 mnist_dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
 training_generator = NumpyLoader(mnist_dataset, batch_size=batch_size, num_workers=0)
@@ -309,7 +198,6 @@ mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
 test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1), dtype=jnp.float32)
 test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
 
-
 # End data loading
 ###########################################################################
 
@@ -317,11 +205,10 @@ test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
 # Training Loop
 
 
-import sys
 import matplotlib.pyplot as plt
 import pickle
 
-mode=input('mode (kfac/new/newmomentum): ')
+mode=input('mode (kfac/new): ')
 
 if mode=='new' or mode=='newmomentum':
   @jax.jit
@@ -363,12 +250,7 @@ for epoch in range(num_epochs):
   for i, (x, y) in enumerate(training_generator):
     y = one_hot(y, n_targets)
 
-
     if mode=='new':
-      grads, aux = newgrad(params, x, y)
-      params = update(params, grads, rate)
-
-    if mode=='newmomentum':
       grads, aux = newgradmomentum(params, x, y ,prevgrad)
       prevgrad=grads
       params = update(params, grads, rate)
@@ -383,15 +265,15 @@ for epoch in range(num_epochs):
     print(losses[-1])
     if i%100==0 and i>=100:
 
-      with open('data_{}.pkl'.format(mode),'wb') as f:
+      with open('outputs/{}.pkl'.format(mode),'wb') as f:
         pickle.dump((losses,accuracies),f)
 
     if i%100==0:
       fig,axs=plt.subplots(2)
 
-      for mode_ in ['new','newmomentum','kfac']:
+      for mode_ in ['new','kfac']:
         try:
-          with open('data_{}.pkl'.format(mode_),'rb') as f:
+          with open('outputs/{}.pkl'.format(mode_),'rb') as f:
             losses_,accuracies_=pickle.load(f)
 
           modelabel=mode_
@@ -402,7 +284,7 @@ for epoch in range(num_epochs):
         except:
           print('no data for {}'.format(mode_))
 
-      plt.savefig('loss.png')
+      plt.savefig('outputs/loss.png')
       plt.close()
 
   epoch_time = time.time() - start_time
