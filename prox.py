@@ -305,12 +305,12 @@ if mode=='kfac':
 losses=[]
 accuracies=[]
 prevgrad=tree_map(lambda x:0*x,params)
-
+j=0
 
 for epoch in range(num_epochs):
   start_time = time.time()
   for i, (x, y) in enumerate(training_generator):
-
+    j+=1
     if y.shape!=(batch_size,):
       continue
 
@@ -319,6 +319,8 @@ for epoch in range(num_epochs):
     if mode=='new':
       grads, aux = newgradmomentum(params, x, y ,prevgrad)
       prevgrad=grads
+
+      rate=0.1*0.999**j
       params = update(params, grads, rate)
 
     if mode=='newadapt':
