@@ -15,6 +15,10 @@ from util import *
 from jax.tree_util import tree_flatten, tree_unflatten, tree_map
 import sys
 from config import *
+import time
+import datetime
+ID=datetime.datetime.now().strftime('%m%d%H%M')
+print(ID)
 
 rate = 0.1
 num_epochs = 25
@@ -297,7 +301,7 @@ prevgrad=tree_map(lambda x:0*x,params)
 def plot():
   for mode_ in ['new','kfac']:
     try:
-      with open('outputs/{}_{}.pkl'.format(datasetname,mode_),'rb') as f:
+      with open('outputs/{}_{}_{}.pkl'.format(datasetname,mode_,ID),'rb') as f:
         losses_,accuracies_=pickle.load(f)
 
       modelabel=mode_
@@ -341,7 +345,7 @@ for epoch in range(num_epochs):
     print(losses[-1])
     if i%100==0 and i>=100:
 
-      with open('outputs/{}_{}.pkl'.format(datasetname,mode),'wb') as f:
+      with open('outputs/{}_{}_{}.pkl'.format(datasetname,mode,ID),'wb') as f:
         pickle.dump(dict(loss=losses,accuracy=accuracies),f)
 
     #if i%100==0:
