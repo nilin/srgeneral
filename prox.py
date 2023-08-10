@@ -17,18 +17,25 @@ import sys
 from config import *
 import time
 import datetime
+import argparse
+
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--mode', type=str)
+parser.add_argument('--dataset', type=str)
+args=parser.parse_args()
+mode=args.mode
+datasetname=args.dataset
+
+
 ID=datetime.datetime.now().strftime('%m%d%H%M')
 print(ID)
 
 rate = 0.1
 num_epochs = 25
-batch_size = 64
 n_targets = 10
 
-if 'cifar10' in sys.argv:
-  datasetname='cifar10'
-if 'mnist' in sys.argv:
-  datasetname='mnist'
 
 class Model(nn.Module):
   @nn.compact
@@ -254,28 +261,30 @@ import matplotlib.pyplot as plt
 import pickle
 import sys
 
-if 'new' in sys.argv:
-  mode='new'
-elif 'kfac' in sys.argv:
-  mode='kfac'
-elif 'sgd' in sys.argv:
-  mode='sgd'
-else:
-  mode=input('mode (kfac/new): ')
 
 if mode=='new':
   @jax.jit
   def update(params,grads,rate):
     return tree_map(lambda p,g:p-rate*g,params,grads)
   
-if mode=='kfac':
-  import kfac_jax
+if mode=='newadapt':
+  opt=optax.adam(learning_rate=00.1)
+  optstate=opt.init(params)
+  
 
-  def loss(params, xy):
-    x,y=xy
-    logits = batched_predict(params, x)
-    kfac_jax.register_softmax_cross_entropy_loss(logits, y)
-    return -jnp.mean(logits * y)
+import kfac_jax
+def loss(params, xy):
+  x,y=xy
+  logits = batched_predict(params, x)
+  kfac_jax.register_softmax_cross_entropy_loss(logits, y)
+  return -jnp.mean(logits * y)
+
+if mode=='sgd':
+  value_and_grad_func=jax.jit(jax.value_and_grad(loss))
+  opt=optax.sgd(learning_rate=0.1)
+  optstate=opt.init(params)
+  
+if mode=='kfac':
 
   kfac_opt=kfac_jax.Optimizer(
     value_and_grad_func=jax.value_and_grad(loss),
@@ -295,31 +304,8 @@ if mode=='kfac':
 
 losses=[]
 accuracies=[]
-
 prevgrad=tree_map(lambda x:0*x,params)
 
-def plot():
-  for mode_ in ['new','kfac']:
-    try:
-      with open('outputs/{}_{}_{}.pkl'.format(datasetname,mode_,ID),'rb') as f:
-        losses_,accuracies_=pickle.load(f)
-
-      modelabel=mode_
-      #plt.plot([1-a for a in accuracies_],label=modelabel)
-      plt.plot(accuracies_,label=modelabel)
-      plt.yscale('log')
-      plt.legend()
-    except Exception as e:
-      print(e)
-      print('no data for {}'.format(mode_))
-
-  plt.savefig('outputs/loss.png')
-  plt.close()
-
-import sys
-if 'plot' in sys.argv:
-  plot()
-  sys.exit()  
 
 for epoch in range(num_epochs):
   start_time = time.time()
@@ -335,6 +321,18 @@ for epoch in range(num_epochs):
       prevgrad=grads
       params = update(params, grads, rate)
 
+    if mode=='newadapt':
+      grads, aux = newgradmomentum(params, x, y ,prevgrad)
+      prevgrad=grads
+      updates,optstate=opt.update(grads,optstate)
+      params=optax.apply_updates(params,updates)
+
+    if mode=='sgd':
+      loss_,grads=value_and_grad_func(params,(x,y))
+      aux=dict(loss=loss_)
+      updates,optstate=opt.update(grads,optstate)
+      params=optax.apply_updates(params,updates)
+
     if mode=='kfac':
       key=rnd.split(key)[0]
       params,optstate,aux=kfac_opt.step(params,optstate,key,batch=(x,y),global_step_int=i)
@@ -347,16 +345,3 @@ for epoch in range(num_epochs):
 
       with open('outputs/{}_{}_{}.pkl'.format(datasetname,mode,ID),'wb') as f:
         pickle.dump(dict(loss=losses,accuracy=accuracies),f)
-
-    #if i%100==0:
-      #plot()
-      #fig,axs=plt.subplots(2)
-
-
-  epoch_time = time.time() - start_time
-
-  #train_acc = accuracy(params, train_images, train_labels)
-  #test_acc = accuracy(params, test_images, test_labels)
-  #print("Epoch {} in {:0.2f} sec".format(epoch, epoch_time))
-  #print("Training set accuracy {}".format(train_acc))
-  #print("Test set accuracy {}".format(test_acc))
