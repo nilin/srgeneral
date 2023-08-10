@@ -342,8 +342,8 @@ for epoch in range(num_epochs):
     losses.append(aux['loss'])
     accuracies.append(accuracy(params, x, y))
 
-    print(losses[-1])
-    if i%100==0 and i>=100:
+    print('{}|{}|{}'.format(epoch,i,losses[-1]))
+    if i%10==0:
 
       with open('outputs/{}_{}_{}.pkl'.format(datasetname,mode,ID),'wb') as f:
         pickle.dump(dict(loss=losses,accuracy=accuracies),f)
