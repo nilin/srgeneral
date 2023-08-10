@@ -5,7 +5,7 @@ import jax
 from jax.scipy.special import logsumexp
 import numpy as np
 from torch.utils import data
-from torchvision.datasets import MNIST
+from torchvision.datasets import MNIST, CIFAR10
 import optax
 import time
 import flax
@@ -19,12 +19,17 @@ rate = 0.1
 num_epochs = 8
 batch_size = 64
 n_targets = 10
-
+datasetname='cifar10'
 
 class Model(nn.Module):
   @nn.compact
   def __call__(self, x, mode='log'):
-    x = jnp.reshape(x,x.shape[:-1]+(28,28,1))
+
+    if datasetname=='mnist':
+      x = jnp.reshape(x,x.shape[:-1]+(28,28,1))
+    if datasetname=='cifar10':
+      x = jnp.reshape(x,x.shape[:-1]+(32,32,3))
+
     x = nn.Conv(features=8, strides=2, kernel_size=(3, 3))(x)
     x = nn.LayerNorm()(x)
     x = nn.relu(x)
@@ -45,7 +50,12 @@ class Model(nn.Module):
 model=Model()
 
 batched_predict = model.apply
-dummy_imgs = random.normal(random.PRNGKey(1), (batch_size, 28 * 28))
+if datasetname=='mnist':
+  dummy_imgs = random.normal(random.PRNGKey(1), (batch_size, 28 * 28))
+if datasetname=='cifar10':
+  dummy_imgs = random.normal(random.PRNGKey(1), (batch_size, 32*32*3))
+
+
 dummy_labels = random.normal(random.PRNGKey(1), (batch_size, n_targets))
 params=model.init(rnd.PRNGKey(0), dummy_imgs)
 
@@ -191,18 +201,34 @@ class FlattenAndCast(object):
   def __call__(self, pic):
     return np.ravel(np.array(pic, dtype=jnp.float32))
 
-# Define our dataset, using torch datasets
-mnist_dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
-training_generator = NumpyLoader(mnist_dataset, batch_size=batch_size, num_workers=0)
 
-# Get the full train dataset (for checking accuracy while training)
-train_images = np.array(mnist_dataset.train_data).reshape(len(mnist_dataset.train_data), -1)
-train_labels = one_hot(np.array(mnist_dataset.train_labels), n_targets)
+## Define our dataset, using torch datasets
+#mnist_dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
+#training_generator = NumpyLoader(mnist_dataset, batch_size=batch_size, num_workers=0)
+#
+## Get the full train dataset (for checking accuracy while training)
+#train_images = np.array(mnist_dataset.train_data).reshape(len(mnist_dataset.train_data), -1)
+#train_labels = one_hot(np.array(mnist_dataset.train_labels), n_targets)
+#
+## Get full test dataset
+#mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
+#test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1), dtype=jnp.float32)
+#test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
+
+
+# Define our dataset, using torch datasets
+dataset = CIFAR10('/tmp/cifar10/', download=True, transform=FlattenAndCast())
+training_generator = NumpyLoader(dataset, batch_size=batch_size, num_workers=0)
+
+## Get the full train dataset (for checking accuracy while training)
+#train_images = np.array(dataset.train_data).reshape(len(dataset.train_data), -1)
+#train_labels = one_hot(np.array(dataset.train_labels), n_targets)
 
 # Get full test dataset
-mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
-test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1), dtype=jnp.float32)
-test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
+#dataset_test = CIFAR10('/tmp/cifar10/', download=True, train=False)
+#test_images = jnp.array(dataset_test.test_data.numpy().reshape(len(dataset_test.test_data), -1), dtype=jnp.float32)
+#test_labels = one_hot(np.array(dataset_test.test_labels), n_targets)
+
 
 # End data loading
 ###########################################################################
@@ -213,8 +239,14 @@ test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
 
 import matplotlib.pyplot as plt
 import pickle
+import sys
 
-mode=input('mode (kfac/new): ')
+if 'new' in sys.argv:
+  mode='new'
+elif 'kfac' in sys.argv:
+  mode='kfac'
+else:
+  mode=input('mode (kfac/new): ')
 
 if mode=='new' or mode=='newmomentum':
   @jax.jit
@@ -251,6 +283,29 @@ accuracies=[]
 
 prevgrad=tree_map(lambda x:0*x,params)
 
+def plot():
+  for mode_ in ['new','kfac']:
+    try:
+      with open('outputs/{}.pkl'.format(mode_),'rb') as f:
+        losses_,accuracies_=pickle.load(f)
+
+      modelabel=mode_
+      #plt.plot([1-a for a in accuracies_],label=modelabel)
+      plt.plot(accuracies_,label=modelabel)
+      plt.yscale('log')
+      plt.legend()
+    except Exception as e:
+      print(e)
+      print('no data for {}'.format(mode_))
+
+  plt.savefig('outputs/loss.png')
+  plt.close()
+
+import sys
+if 'plot' in sys.argv:
+  plot()
+  sys.exit()  
+
 for epoch in range(num_epochs):
   start_time = time.time()
   for i, (x, y) in enumerate(training_generator):
@@ -279,26 +334,14 @@ for epoch in range(num_epochs):
         pickle.dump((losses,accuracies),f)
 
     if i%100==0:
+      plot()
       #fig,axs=plt.subplots(2)
 
-      for mode_ in ['new','kfac']:
-        try:
-          with open('outputs/{}.pkl'.format(mode_),'rb') as f:
-            losses_,accuracies_=pickle.load(f)
-
-          modelabel=mode_
-          plt.plot(accuracies_,label=modelabel)
-          plt.legend()
-        except:
-          print('no data for {}'.format(mode_))
-
-      plt.savefig('outputs/loss.png')
-      plt.close()
 
   epoch_time = time.time() - start_time
 
-  train_acc = accuracy(params, train_images, train_labels)
-  test_acc = accuracy(params, test_images, test_labels)
-  print("Epoch {} in {:0.2f} sec".format(epoch, epoch_time))
-  print("Training set accuracy {}".format(train_acc))
-  print("Test set accuracy {}".format(test_acc))
+  #train_acc = accuracy(params, train_images, train_labels)
+  #test_acc = accuracy(params, test_images, test_labels)
+  #print("Epoch {} in {:0.2f} sec".format(epoch, epoch_time))
+  #print("Training set accuracy {}".format(train_acc))
+  #print("Test set accuracy {}".format(test_acc))
