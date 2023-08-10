@@ -13,13 +13,17 @@ import flax.linen as nn
 from jax import random as rnd
 from util import *
 from jax.tree_util import tree_flatten, tree_unflatten, tree_map
-
+import sys
 
 rate = 0.1
 num_epochs = 8
 batch_size = 64
 n_targets = 10
-datasetname='cifar10'
+
+if 'cifar10' in sys.argv:
+  datasetname='cifar10'
+if 'mnist' in sys.argv:
+  datasetname='mnist'
 
 class Model(nn.Module):
   @nn.compact
@@ -201,33 +205,35 @@ class FlattenAndCast(object):
   def __call__(self, pic):
     return np.ravel(np.array(pic, dtype=jnp.float32))
 
+if datasetname=='mnist':
+  # Define our dataset, using torch datasets
+  dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
+  training_generator = NumpyLoader(dataset, batch_size=batch_size, num_workers=0)
 
-## Define our dataset, using torch datasets
-#mnist_dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
-#training_generator = NumpyLoader(mnist_dataset, batch_size=batch_size, num_workers=0)
-#
-## Get the full train dataset (for checking accuracy while training)
-#train_images = np.array(mnist_dataset.train_data).reshape(len(mnist_dataset.train_data), -1)
-#train_labels = one_hot(np.array(mnist_dataset.train_labels), n_targets)
-#
-## Get full test dataset
-#mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
-#test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1), dtype=jnp.float32)
-#test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
+  # Get the full train dataset (for checking accuracy while training)
+  #train_images = np.array(mnist_dataset.train_data).reshape(len(mnist_dataset.train_data), -1)
+  #train_labels = one_hot(np.array(mnist_dataset.train_labels), n_targets)
+
+  ## Get full test dataset
+  #mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
+  #test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1), dtype=jnp.float32)
+  #test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
 
 
-# Define our dataset, using torch datasets
-dataset = CIFAR10('/tmp/cifar10/', download=True, transform=FlattenAndCast())
-training_generator = NumpyLoader(dataset, batch_size=batch_size, num_workers=0)
+if datasetname=='cifar10':
 
-## Get the full train dataset (for checking accuracy while training)
-#train_images = np.array(dataset.train_data).reshape(len(dataset.train_data), -1)
-#train_labels = one_hot(np.array(dataset.train_labels), n_targets)
+  # Define our dataset, using torch datasets
+  dataset = CIFAR10('/tmp/cifar10/', download=True, transform=FlattenAndCast())
+  training_generator = NumpyLoader(dataset, batch_size=batch_size, num_workers=0)
 
-# Get full test dataset
-#dataset_test = CIFAR10('/tmp/cifar10/', download=True, train=False)
-#test_images = jnp.array(dataset_test.test_data.numpy().reshape(len(dataset_test.test_data), -1), dtype=jnp.float32)
-#test_labels = one_hot(np.array(dataset_test.test_labels), n_targets)
+  ## Get the full train dataset (for checking accuracy while training)
+  #train_images = np.array(dataset.train_data).reshape(len(dataset.train_data), -1)
+  #train_labels = one_hot(np.array(dataset.train_labels), n_targets)
+
+  # Get full test dataset
+  #dataset_test = CIFAR10('/tmp/cifar10/', download=True, train=False)
+  #test_images = jnp.array(dataset_test.test_data.numpy().reshape(len(dataset_test.test_data), -1), dtype=jnp.float32)
+  #test_labels = one_hot(np.array(dataset_test.test_labels), n_targets)
 
 
 # End data loading
@@ -286,7 +292,7 @@ prevgrad=tree_map(lambda x:0*x,params)
 def plot():
   for mode_ in ['new','kfac']:
     try:
-      with open('outputs/{}.pkl'.format(mode_),'rb') as f:
+      with open('outputs/{}_{}.pkl'.format(datasetname,mode_),'rb') as f:
         losses_,accuracies_=pickle.load(f)
 
       modelabel=mode_
@@ -330,11 +336,11 @@ for epoch in range(num_epochs):
     print(losses[-1])
     if i%100==0 and i>=100:
 
-      with open('outputs/{}.pkl'.format(mode),'wb') as f:
+      with open('outputs/{}_{}.pkl'.format(datasetname,mode),'wb') as f:
         pickle.dump((losses,accuracies),f)
 
-    if i%100==0:
-      plot()
+    #if i%100==0:
+      #plot()
       #fig,axs=plt.subplots(2)
 
 
