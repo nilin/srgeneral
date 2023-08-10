@@ -7,3 +7,4 @@ data_kfac.pkl
 data_kfac.pkl
 outputs/*
 !outputs/mt.txt
+config.py

@@ -14,9 +14,10 @@ from jax import random as rnd
 from util import *
 from jax.tree_util import tree_flatten, tree_unflatten, tree_map
 import sys
+from config import *
 
 rate = 0.1
-num_epochs = 8
+num_epochs = 25
 batch_size = 64
 n_targets = 10
 
@@ -205,9 +206,11 @@ class FlattenAndCast(object):
   def __call__(self, pic):
     return np.ravel(np.array(pic, dtype=jnp.float32))
 
+import os
+
 if datasetname=='mnist':
   # Define our dataset, using torch datasets
-  dataset = MNIST('/tmp/mnist/', download=True, transform=FlattenAndCast())
+  dataset = MNIST(os.path.join(datasetpath,'mnist/'), download=True, transform=FlattenAndCast())
   training_generator = NumpyLoader(dataset, batch_size=batch_size, num_workers=0)
 
   # Get the full train dataset (for checking accuracy while training)
@@ -223,7 +226,7 @@ if datasetname=='mnist':
 if datasetname=='cifar10':
 
   # Define our dataset, using torch datasets
-  dataset = CIFAR10('/tmp/cifar10/', download=True, transform=FlattenAndCast())
+  dataset = CIFAR10(os.path.join(datasetpath,'cifar10/'), download=True, transform=FlattenAndCast())
   training_generator = NumpyLoader(dataset, batch_size=batch_size, num_workers=0)
 
   ## Get the full train dataset (for checking accuracy while training)
@@ -251,10 +254,12 @@ if 'new' in sys.argv:
   mode='new'
 elif 'kfac' in sys.argv:
   mode='kfac'
+elif 'sgd' in sys.argv:
+  mode='sgd'
 else:
   mode=input('mode (kfac/new): ')
 
-if mode=='new' or mode=='newmomentum':
+if mode=='new':
   @jax.jit
   def update(params,grads,rate):
     return tree_map(lambda p,g:p-rate*g,params,grads)
@@ -337,7 +342,7 @@ for epoch in range(num_epochs):
     if i%100==0 and i>=100:
 
       with open('outputs/{}_{}.pkl'.format(datasetname,mode),'wb') as f:
-        pickle.dump((losses,accuracies),f)
+        pickle.dump(dict(loss=losses,accuracy=accuracies),f)
 
     #if i%100==0:
       #plot()
