@@ -24,9 +24,11 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--mode', type=str)
 parser.add_argument('--dataset', type=str)
+parser.add_argument('--a', type=float, default=0.999)
 args=parser.parse_args()
 mode=args.mode
 datasetname=args.dataset
+a=args.a
 
 
 ID=datetime.datetime.now().strftime('%m%d%H%M')
@@ -261,6 +263,7 @@ import matplotlib.pyplot as plt
 import pickle
 import sys
 
+moreinfo=dict()
 
 if mode=='new':
   @jax.jit
@@ -324,7 +327,9 @@ for epoch in range(num_epochs):
       grads, aux = newgradmomentum(params, x, y ,prevgrad)
       prevgrad=grads
 
-      rate=0.1*0.9999**j
+      a=0.9999
+      rate=0.1*a**j
+      moreinfo['a']=a
       params = update(params, grads, rate)
 
     if mode=='newadapt':
@@ -350,4 +355,4 @@ for epoch in range(num_epochs):
     if i%10==0:
 
       with open('outputs/{}_{}_{}.pkl'.format(datasetname,mode,ID),'wb') as f:
-        pickle.dump(dict(loss=losses,accuracy=accuracies),f)
+        pickle.dump(dict(loss=losses,accuracy=accuracies)|moreinfo,f)
