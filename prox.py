@@ -270,21 +270,25 @@ if mode=='new':
 if mode=='newadapt':
   opt=optax.adam(learning_rate=00.1)
   optstate=opt.init(params)
-  
 
-import kfac_jax
-def loss(params, xy):
-  x,y=xy
-  logits = batched_predict(params, x)
-  kfac_jax.register_softmax_cross_entropy_loss(logits, y)
-  return -jnp.mean(logits * y)
 
 if mode=='sgd':
+  def loss(params, xy):
+    x,y=xy
+    logits = batched_predict(params, x)
+    return -jnp.mean(logits * y)
+
   value_and_grad_func=jax.jit(jax.value_and_grad(loss))
   opt=optax.sgd(learning_rate=0.1)
   optstate=opt.init(params)
   
 if mode=='kfac':
+  import kfac_jax
+  def loss(params, xy):
+    x,y=xy
+    logits = batched_predict(params, x)
+    kfac_jax.register_softmax_cross_entropy_loss(logits, y)
+    return -jnp.mean(logits * y)
 
   kfac_opt=kfac_jax.Optimizer(
     value_and_grad_func=jax.value_and_grad(loss),
@@ -320,7 +324,7 @@ for epoch in range(num_epochs):
       grads, aux = newgradmomentum(params, x, y ,prevgrad)
       prevgrad=grads
 
-      rate=0.1*0.999**j
+      rate=0.1*0.9999**j
       params = update(params, grads, rate)
 
     if mode=='newadapt':
@@ -337,10 +341,10 @@ for epoch in range(num_epochs):
 
     if mode=='kfac':
       key=rnd.split(key)[0]
-      params,optstate,aux=kfac_opt.step(params,optstate,key,batch=(x,y),global_step_int=i)
+      params,optstate,aux=kfac_opt.step(params,optstate,key,batch=(x,y),global_step_int=j)
 
-    losses.append(aux['loss'])
-    accuracies.append(accuracy(params, x, y))
+    losses.append(float(aux['loss']))
+    accuracies.append(float(accuracy(params, x, y)))
 
     print('{}|{}|{}'.format(epoch,i,losses[-1]))
     if i%10==0:
