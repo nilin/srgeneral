@@ -33,7 +33,8 @@ config=dict(
   notes='{} {} lr={}'.format(mode,dataset,lr),
   mode=mode,
   dataset=dataset,
-  lr=lr
+  lr=lr,
+  batch_size=batch_size,
   )
 
 ID=datetime.datetime.now().strftime('%m%d-%H%M%S')
