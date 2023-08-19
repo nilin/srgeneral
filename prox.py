@@ -1,5 +1,4 @@
 import jax.numpy as jnp
-from jax import grad, jit, vmap
 from jax import random
 import jax
 from jax.scipy.special import logsumexp
@@ -8,40 +7,48 @@ from torch.utils import data
 from torchvision.datasets import MNIST, CIFAR10
 import optax
 import time
-import flax
 import flax.linen as nn
 from jax import random as rnd
 from util import *
 from jax.tree_util import tree_flatten, tree_unflatten, tree_map
-import sys
 from config import *
 import time
 import datetime
+import json
 import argparse
+import os
 
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mode', type=str)
 parser.add_argument('--dataset', type=str)
-parser.add_argument('--a', type=float, default=0.999)
+parser.add_argument('--lr', type=float)
 args=parser.parse_args()
 mode=args.mode
 datasetname=args.dataset
-a=args.a
+lr=args.lr
 
+rconfig=dict(
+  notes='{} {} lr={}'.format(mode,datasetname,lr),
+  mode=mode,
+  dataset=datasetname,
+  lr=lr
+  )
 
-ID=datetime.datetime.now().strftime('%m%d%H%M')
+ID=datetime.datetime.now().strftime('%m%d-%H%M%S')
 print(ID)
 
-rate = 0.1
+logdir=f'logs/{ID}'
+os.makedirs(logdir)
+json.dump(rconfig,open(f'{logdir}/config.json','w'))
+
 num_epochs = 25
 n_targets = 10
 
-
 class Model(nn.Module):
   @nn.compact
-  def __call__(self, x, mode='log'):
+  def __call__(self, x):
 
     if datasetname=='mnist':
       x = jnp.reshape(x,x.shape[:-1]+(28,28,1))
@@ -60,10 +67,7 @@ class Model(nn.Module):
     x = nn.relu(x)
     x = nn.Dense(features=10)(x)
     
-    if mode=='p':
-      return nn.softmax(x)
-    if mode=='log':
-      return nn.log_softmax(x)
+    return nn.log_softmax(x)
 
 model=Model()
 
@@ -78,7 +82,7 @@ dummy_labels = random.normal(random.PRNGKey(1), (batch_size, n_targets))
 params=model.init(rnd.PRNGKey(0), dummy_imgs)
 
 def batched_predict_restricted(params,images,targets):
-  prediction=batched_predict(params,images,mode='p')
+  prediction=batched_predict(params,images)
   return jnp.sum(prediction*targets,axis=-1)
 
 jac_restricted=jax.jacrev(batched_predict_restricted)
@@ -94,7 +98,7 @@ def accuracy(params, images, targets):
 
 
 #########################
-### method with Gil's momentum scheme ###
+# ProxSR
 
 @jax.jit
 def newgradmomentum(params,images,targets,prev_grad):
@@ -110,19 +114,19 @@ def newgradmomentum(params,images,targets,prev_grad):
   Ohat=O_=flattenjac(O)
   T=jnp.inner(O_,O_)
 
-  l,v=jnp.linalg.eigh(T)
-  valid=l>jnp.quantile(l,.5)
-  inv=(1/l)*valid
-  invT=v*inv[None,:] @ v.T
+  eps=1e-3
+  scale=jnp.trace(T)/T.shape[0]
+  invT=jnp.linalg.inv(T+eps*scale*jnp.eye(T.shape[0]))
 
-  #logits=jnp.sum(batched_predict(params,images)*targets,axis=-1)
-  #p=jnp.exp(logits)
-  p=jnp.sum(batched_predict(params,images,mode='p')*targets,axis=-1)
-  logits=jnp.log(p)
-  e=-(1-p)
+  #l,v=jnp.linalg.eigh(T)
+  #valid=l>jnp.quantile(l,.5)
+  #inv=(1/l)*valid
+  #invT=v*inv[None,:] @ v.T
 
+  targetlogits=jnp.sum(batched_predict(params,images)*targets,axis=-1)
+  e=targetlogits
 
-# Gil's momentum scheme
+  #ProxSR
 
   prev_grad,_=tree_flatten(prev_grad)
   prev_grad=jnp.concatenate([jnp.ravel(A) for A in prev_grad])
@@ -130,21 +134,12 @@ def newgradmomentum(params,images,targets,prev_grad):
   Ohat_prev_grad = Ohat @ prev_grad
   OhatT_Tinv = Ohat.T @ invT
   
-  #
-
   min_sr_solution = Ohat.T @ (invT @ e)
   prev_grad_subspace = OhatT_Tinv @ Ohat_prev_grad
   prev_grad_complement = prev_grad - prev_grad_subspace
-#
-  prev_grad_parallel = (
-      min_sr_solution
-      * (min_sr_solution @ prev_grad_subspace)
-      / (min_sr_solution @ min_sr_solution)
-  )
 
   out=(
-    0.1*min_sr_solution
-    +.9*prev_grad_parallel
+    min_sr_solution
     +.99*prev_grad_complement
   )
 
@@ -161,7 +156,7 @@ def newgradmomentum(params,images,targets,prev_grad):
     start=start+s
   
   return tree_unflatten(treeshape,out_),\
-  dict(loss=-jnp.mean(logits)/n_targets)
+  dict(loss=-jnp.mean(targetlogits)/n_targets)
 
 ###########################################################################
 
@@ -259,22 +254,13 @@ if datasetname=='cifar10':
 # Training Loop
 
 
-import matplotlib.pyplot as plt
-import pickle
-import sys
 
-moreinfo=dict()
 
-if mode=='new':
+if mode=='ProxSR':
   @jax.jit
   def update(params,grads,rate):
     return tree_map(lambda p,g:p-rate*g,params,grads)
   
-if mode=='newadapt':
-  opt=optax.adam(learning_rate=00.1)
-  optstate=opt.init(params)
-
-
 if mode=='sgd':
   def loss(params, xy):
     x,y=xy
@@ -282,7 +268,7 @@ if mode=='sgd':
     return -jnp.mean(logits * y)
 
   value_and_grad_func=jax.jit(jax.value_and_grad(loss))
-  opt=optax.sgd(learning_rate=0.1)
+  opt=optax.sgd(learning_rate=lr)
   optstate=opt.init(params)
   
 if mode=='kfac':
@@ -299,6 +285,7 @@ if mode=='kfac':
     value_func_has_aux=False,
     value_func_has_state=False,
     value_func_has_rng=False,
+    #learning_rate_schedule=optax.constant_schedule(lr),
     use_adaptive_learning_rate=True,
     use_adaptive_momentum=True,
     use_adaptive_damping=True,
@@ -323,20 +310,10 @@ for epoch in range(num_epochs):
 
     y = one_hot(y, n_targets)
 
-    if mode=='new':
+    if mode=='ProxSR':
       grads, aux = newgradmomentum(params, x, y ,prevgrad)
       prevgrad=grads
-
-      a=0.9999
-      rate=0.1*a**j
-      moreinfo['a']=a
-      params = update(params, grads, rate)
-
-    if mode=='newadapt':
-      grads, aux = newgradmomentum(params, x, y ,prevgrad)
-      prevgrad=grads
-      updates,optstate=opt.update(grads,optstate)
-      params=optax.apply_updates(params,updates)
+      params = update(params, grads, lr)
 
     if mode=='sgd':
       loss_,grads=value_and_grad_func(params,(x,y))
@@ -348,11 +325,13 @@ for epoch in range(num_epochs):
       key=rnd.split(key)[0]
       params,optstate,aux=kfac_opt.step(params,optstate,key,batch=(x,y),global_step_int=j)
 
-    losses.append(float(aux['loss']))
-    accuracies.append(float(accuracy(params, x, y)))
+    loss_=float(aux['loss'])
+    accuracy_=accuracy(params, x, y)
 
-    print('{}|{}|{}'.format(epoch,i,losses[-1]))
-    if i%10==0:
+    print(loss_)
 
-      with open('outputs/{}_{}_{}.pkl'.format(datasetname,mode,ID),'wb') as f:
-        pickle.dump(dict(loss=losses,accuracy=accuracies)|moreinfo,f)
+    with open(os.path.join(logdir,'loss.txt'),'a') as f:
+      f.write(str(loss_)+'\n')
+
+    with open(os.path.join(logdir,'accuracy.txt'),'a') as f:
+      f.write(str(accuracy_)+'\n')
