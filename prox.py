@@ -21,9 +21,9 @@ import kfac_jax
 import dataloading
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--mode', type=str)
-parser.add_argument('--dataset', type=str)
-parser.add_argument('--lr', type=float)
+parser.add_argument('--mode', type=str, default='ProxSR')
+parser.add_argument('--dataset', type=str, default='mnist')
+parser.add_argument('--lr', type=float, default=.1)
 args=parser.parse_args()
 mode=args.mode
 dataset=args.dataset
@@ -45,9 +45,9 @@ os.makedirs(logdir)
 json.dump(config,open(f'{logdir}/config.json','w'))
 
 
-loader,(dummy_imgs,dummy_labels)=dataloading.getloader(dataset)
+loader,(dummy_imgs,dummy_labels)=dataloading.getloader(dataset,train=True)
+testloader,*_=dataloading.getloader(dataset,train=False)
 
-num_epochs = 25
 n_targets = 10
 
 class Model(nn.Module):
@@ -152,70 +152,6 @@ def proxsr(params,images,targets,prev_grad):
   )
 
 ###########################################################################
-
-# based on mnist example from jax authors:
-##################################################
-
-# [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/google/jax/blob/main/docs/notebooks/Neural_Network_and_Data_Loading.ipynb) [![Open in Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://kaggle.com/kernels/welcome?src=https://github.com/google/jax/blob/main/docs/notebooks/Neural_Network_and_Data_Loading.ipynb)
-# 
-# **Copyright 2018 The JAX Authors.**
-# 
-# Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-# 
-# https://www.apache.org/licenses/LICENSE-2.0
-# 
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-## See the License for the specific language governing permissions and
-## limitations under the License.
-#
-#
-############################################################################
-## Data Loading with PyTorch
-#
-#def numpy_collate(batch):
-#  if isinstance(batch[0], np.ndarray):
-#    return np.stack(batch)
-#  elif isinstance(batch[0], (tuple,list)):
-#    transposed = zip(*batch)
-#    return [numpy_collate(samples) for samples in transposed]
-#  else:
-#    return np.array(batch)
-#
-#class NumpyLoader(data.DataLoader):
-#  def __init__(self, dataset, batch_size=1,
-#                shuffle=False, sampler=None,
-#                batch_sampler=None, num_workers=0,
-#                pin_memory=False, drop_last=False,
-#                timeout=0, worker_init_fn=None):
-#    super(self.__class__, self).__init__(dataset,
-#        batch_size=batch_size,
-#        shuffle=shuffle,
-#        sampler=sampler,
-#        batch_sampler=batch_sampler,
-#        num_workers=num_workers,
-#        collate_fn=numpy_collate,
-#        pin_memory=pin_memory,
-#        drop_last=drop_last,
-#        timeout=timeout,
-#        worker_init_fn=worker_init_fn)
-#
-#class FlattenAndCast(object):
-#  def __call__(self, pic):
-#    return np.ravel(np.array(pic, dtype=jnp.float32))
-#
-#if dataset=='mnist':
-#  thedataset = MNIST(os.path.join(datasetpath,'mnist/'), download=True, transform=FlattenAndCast())
-#
-#if dataset=='cifar10':
-#  thedataset = CIFAR10(os.path.join(datasetpath,'cifar10/'), download=True, transform=FlattenAndCast())
-#
-#training_generator = NumpyLoader(thedataset, batch_size=batch_size, num_workers=0)
-#
-# End data loading
-###########################################################################
 # general loss
 
 def lossfn(params, x, y, *args):
@@ -268,12 +204,8 @@ accuracies=[]
 j=0
 
 for epoch in range(num_epochs):
-  start_time = time.time()
-  for i, (x, y) in enumerate(loader):
+  for x, y in loader:
     j+=1
-    if y.shape!=(batch_size,):
-      continue
-
     y = one_hot(y, n_targets)
 
     if mode=='kfac':
@@ -295,3 +227,32 @@ for epoch in range(num_epochs):
 
     with open(os.path.join(logdir,'accuracy.txt'),'a') as f:
       f.write(str(accuracy_)+'\n')
+
+
+evaldir=os.path.join(logdir,'eval')
+os.makedirs(evaldir,exist_ok=True)
+epoch=0
+lossfn=jax.jit(lossfn)
+for x, y in loader:
+  j+=1
+  y = one_hot(y, n_targets)
+
+  if mode=='kfac':
+    key=rnd.split(key)[0]
+    params,optstate,aux=optimizer.step(params,optstate,key,batch=(x,y),global_step_int=j)
+    loss_=float(aux['loss'])
+  else:
+    loss_,grad=valgradfn(params,x,y,prevgrad)
+    updates,optstate=optimizer.update(grad,optstate)
+    params=optax.apply_updates(params,updates)
+    prevgrad=grad
+
+  loss_=lossfn(params,x,y)
+  accuracy_=accuracy(params, x, y)
+  print(loss_)
+
+  with open(os.path.join(evaldir,'loss.txt'),'a') as f:
+    f.write(str(loss_)+'\n')
+
+  with open(os.path.join(evaldir,'accuracy.txt'),'a') as f:
+    f.write(str(accuracy_)+'\n')

@@ -31,7 +31,7 @@ from util import *
 from localconfig import *
 import os
 
-def getloader(dataset):
+def getloader(dataset, train):
   n_targets=10
 
   if dataset=='mnist':
@@ -73,11 +73,11 @@ def getloader(dataset):
       return np.ravel(np.array(pic, dtype=jnp.float32))
 
   if dataset=='mnist':
-    thedataset = MNIST(os.path.join(datasetpath,'mnist/'), download=True, transform=FlattenAndCast())
+    thedataset = MNIST(os.path.join(datasetpath,'mnist/'), train=train, download=True, transform=FlattenAndCast())
 
   if dataset=='cifar10':
-    thedataset = CIFAR10(os.path.join(datasetpath,'cifar10/'), download=True, transform=FlattenAndCast())
+    thedataset = CIFAR10(os.path.join(datasetpath,'cifar10/'), train=train, download=True, transform=FlattenAndCast())
 
-  generator = NumpyLoader(thedataset, batch_size=batch_size, num_workers=0)
+  generator = NumpyLoader(thedataset, batch_size=batch_size, num_workers=0, shuffle=True, drop_last=True)
 
   return generator,(dummy_imgs,dummy_labels)
