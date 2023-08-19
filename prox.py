@@ -11,14 +11,14 @@ import flax.linen as nn
 from jax import random as rnd
 from util import *
 from jax.tree_util import tree_flatten, tree_unflatten, tree_map
-from config import *
+from localconfig import *
 import time
 import datetime
 import json
 import argparse
 import os
-
-
+import kfac_jax
+import dataloading
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mode', type=str)
@@ -26,13 +26,13 @@ parser.add_argument('--dataset', type=str)
 parser.add_argument('--lr', type=float)
 args=parser.parse_args()
 mode=args.mode
-datasetname=args.dataset
+dataset=args.dataset
 lr=args.lr
 
-rconfig=dict(
-  notes='{} {} lr={}'.format(mode,datasetname,lr),
+config=dict(
+  notes='{} {} lr={}'.format(mode,dataset,lr),
   mode=mode,
-  dataset=datasetname,
+  dataset=dataset,
   lr=lr
   )
 
@@ -41,7 +41,10 @@ print(ID)
 
 logdir=f'logs/{ID}'
 os.makedirs(logdir)
-json.dump(rconfig,open(f'{logdir}/config.json','w'))
+json.dump(config,open(f'{logdir}/config.json','w'))
+
+
+loader,(dummy_imgs,dummy_labels)=dataloading.getloader(dataset)
 
 num_epochs = 25
 n_targets = 10
@@ -50,9 +53,9 @@ class Model(nn.Module):
   @nn.compact
   def __call__(self, x):
 
-    if datasetname=='mnist':
+    if dataset=='mnist':
       x = jnp.reshape(x,x.shape[:-1]+(28,28,1))
-    if datasetname=='cifar10':
+    if dataset=='cifar10':
       x = jnp.reshape(x,x.shape[:-1]+(32,32,3))
 
     x = nn.Conv(features=8, strides=2, kernel_size=(3, 3))(x)
@@ -72,13 +75,6 @@ class Model(nn.Module):
 model=Model()
 
 batched_predict = model.apply
-if datasetname=='mnist':
-  dummy_imgs = random.normal(random.PRNGKey(1), (batch_size, 28 * 28))
-if datasetname=='cifar10':
-  dummy_imgs = random.normal(random.PRNGKey(1), (batch_size, 32*32*3))
-
-
-dummy_labels = random.normal(random.PRNGKey(1), (batch_size, n_targets))
 params=model.init(rnd.PRNGKey(0), dummy_imgs)
 
 def batched_predict_restricted(params,images,targets):
@@ -96,12 +92,11 @@ def accuracy(params, images, targets):
   return jnp.mean(predicted_class == target_class)
 
 
-
 #########################
 # ProxSR
 
 @jax.jit
-def newgradmomentum(params,images,targets,prev_grad):
+def proxsr(params,images,targets,prev_grad):
 
   O=jac_restricted(params,images,targets)
 
@@ -117,11 +112,6 @@ def newgradmomentum(params,images,targets,prev_grad):
   eps=1e-3
   scale=jnp.trace(T)/T.shape[0]
   invT=jnp.linalg.inv(T+eps*scale*jnp.eye(T.shape[0]))
-
-  #l,v=jnp.linalg.eigh(T)
-  #valid=l>jnp.quantile(l,.5)
-  #inv=(1/l)*valid
-  #invT=v*inv[None,:] @ v.T
 
   targetlogits=jnp.sum(batched_predict(params,images)*targets,axis=-1)
   e=targetlogits
@@ -155,8 +145,10 @@ def newgradmomentum(params,images,targets,prev_grad):
     out_.append(jnp.reshape(block,sh[1:]))
     start=start+s
   
-  return tree_unflatten(treeshape,out_),\
-  dict(loss=-jnp.mean(targetlogits)/n_targets)
+  return (
+    -jnp.mean(targetlogits)/n_targets,
+    tree_unflatten(treeshape,out_),
+  )
 
 ###########################################################################
 
@@ -175,112 +167,84 @@ def newgradmomentum(params,images,targets,prev_grad):
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-
-###########################################################################
-# Data Loading with PyTorch
-
-
-def numpy_collate(batch):
-  if isinstance(batch[0], np.ndarray):
-    return np.stack(batch)
-  elif isinstance(batch[0], (tuple,list)):
-    transposed = zip(*batch)
-    return [numpy_collate(samples) for samples in transposed]
-  else:
-    return np.array(batch)
-
-class NumpyLoader(data.DataLoader):
-  def __init__(self, dataset, batch_size=1,
-                shuffle=False, sampler=None,
-                batch_sampler=None, num_workers=0,
-                pin_memory=False, drop_last=False,
-                timeout=0, worker_init_fn=None):
-    super(self.__class__, self).__init__(dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        sampler=sampler,
-        batch_sampler=batch_sampler,
-        num_workers=num_workers,
-        collate_fn=numpy_collate,
-        pin_memory=pin_memory,
-        drop_last=drop_last,
-        timeout=timeout,
-        worker_init_fn=worker_init_fn)
-
-class FlattenAndCast(object):
-  def __call__(self, pic):
-    return np.ravel(np.array(pic, dtype=jnp.float32))
-
-import os
-
-if datasetname=='mnist':
-  # Define our dataset, using torch datasets
-  dataset = MNIST(os.path.join(datasetpath,'mnist/'), download=True, transform=FlattenAndCast())
-  training_generator = NumpyLoader(dataset, batch_size=batch_size, num_workers=0)
-
-  # Get the full train dataset (for checking accuracy while training)
-  #train_images = np.array(mnist_dataset.train_data).reshape(len(mnist_dataset.train_data), -1)
-  #train_labels = one_hot(np.array(mnist_dataset.train_labels), n_targets)
-
-  ## Get full test dataset
-  #mnist_dataset_test = MNIST('/tmp/mnist/', download=True, train=False)
-  #test_images = jnp.array(mnist_dataset_test.test_data.numpy().reshape(len(mnist_dataset_test.test_data), -1), dtype=jnp.float32)
-  #test_labels = one_hot(np.array(mnist_dataset_test.test_labels), n_targets)
-
-
-if datasetname=='cifar10':
-
-  # Define our dataset, using torch datasets
-  dataset = CIFAR10(os.path.join(datasetpath,'cifar10/'), download=True, transform=FlattenAndCast())
-  training_generator = NumpyLoader(dataset, batch_size=batch_size, num_workers=0)
-
-  ## Get the full train dataset (for checking accuracy while training)
-  #train_images = np.array(dataset.train_data).reshape(len(dataset.train_data), -1)
-  #train_labels = one_hot(np.array(dataset.train_labels), n_targets)
-
-  # Get full test dataset
-  #dataset_test = CIFAR10('/tmp/cifar10/', download=True, train=False)
-  #test_images = jnp.array(dataset_test.test_data.numpy().reshape(len(dataset_test.test_data), -1), dtype=jnp.float32)
-  #test_labels = one_hot(np.array(dataset_test.test_labels), n_targets)
-
-
+## See the License for the specific language governing permissions and
+## limitations under the License.
+#
+#
+############################################################################
+## Data Loading with PyTorch
+#
+#def numpy_collate(batch):
+#  if isinstance(batch[0], np.ndarray):
+#    return np.stack(batch)
+#  elif isinstance(batch[0], (tuple,list)):
+#    transposed = zip(*batch)
+#    return [numpy_collate(samples) for samples in transposed]
+#  else:
+#    return np.array(batch)
+#
+#class NumpyLoader(data.DataLoader):
+#  def __init__(self, dataset, batch_size=1,
+#                shuffle=False, sampler=None,
+#                batch_sampler=None, num_workers=0,
+#                pin_memory=False, drop_last=False,
+#                timeout=0, worker_init_fn=None):
+#    super(self.__class__, self).__init__(dataset,
+#        batch_size=batch_size,
+#        shuffle=shuffle,
+#        sampler=sampler,
+#        batch_sampler=batch_sampler,
+#        num_workers=num_workers,
+#        collate_fn=numpy_collate,
+#        pin_memory=pin_memory,
+#        drop_last=drop_last,
+#        timeout=timeout,
+#        worker_init_fn=worker_init_fn)
+#
+#class FlattenAndCast(object):
+#  def __call__(self, pic):
+#    return np.ravel(np.array(pic, dtype=jnp.float32))
+#
+#if dataset=='mnist':
+#  thedataset = MNIST(os.path.join(datasetpath,'mnist/'), download=True, transform=FlattenAndCast())
+#
+#if dataset=='cifar10':
+#  thedataset = CIFAR10(os.path.join(datasetpath,'cifar10/'), download=True, transform=FlattenAndCast())
+#
+#training_generator = NumpyLoader(thedataset, batch_size=batch_size, num_workers=0)
+#
 # End data loading
 ###########################################################################
+# general loss
+
+def lossfn(params, x, y, *args):
+  logits = batched_predict(params, x)
+  kfac_jax.register_softmax_cross_entropy_loss(logits, y)
+  return -jnp.mean(logits * y)
+
+valgradfn=jax.jit(jax.value_and_grad(lossfn))
 
 ###########################################################################
-# Training Loop
 
-
-
+zerograd=tree_map(lambda x:0*x,params)
+prevgrad=zerograd
 
 if mode=='ProxSR':
-  @jax.jit
-  def update(params,grads,rate):
-    return tree_map(lambda p,g:p-rate*g,params,grads)
+  valgradfn=proxsr
+  optimizer=optax.sgd(learning_rate=lr)
+  optstate=optimizer.init(params)
   
 if mode=='sgd':
-  def loss(params, xy):
-    x,y=xy
-    logits = batched_predict(params, x)
-    return -jnp.mean(logits * y)
+  optimizer=optax.sgd(learning_rate=lr)
+  optstate=optimizer.init(params)
 
-  value_and_grad_func=jax.jit(jax.value_and_grad(loss))
-  opt=optax.sgd(learning_rate=lr)
-  optstate=opt.init(params)
-  
+if mode=='adam':
+  optimizer=optax.adam(learning_rate=lr)
+  optstate=optimizer.init(params)
+
 if mode=='kfac':
-  import kfac_jax
-  def loss(params, xy):
-    x,y=xy
-    logits = batched_predict(params, x)
-    kfac_jax.register_softmax_cross_entropy_loss(logits, y)
-    return -jnp.mean(logits * y)
-
-  kfac_opt=kfac_jax.Optimizer(
-    value_and_grad_func=jax.value_and_grad(loss),
+  optimizer=kfac_jax.Optimizer(
+    value_and_grad_func=jax.value_and_grad(lambda params,xy: lossfn(params,xy[0],xy[1])),
     l2_reg=.001,
     value_func_has_aux=False,
     value_func_has_state=False,
@@ -292,40 +256,35 @@ if mode=='kfac':
     initial_damping=1.0,
     multi_device=False,
   )
-  optstate=kfac_opt.init(params,rnd.PRNGKey(0),(dummy_imgs,dummy_labels))
+  optstate=optimizer.init(params,rnd.PRNGKey(0),(dummy_imgs,dummy_labels))
   key=rnd.PRNGKey(0)
 
+###########################################################################
+# train loop
 
 losses=[]
 accuracies=[]
-prevgrad=tree_map(lambda x:0*x,params)
 j=0
 
 for epoch in range(num_epochs):
   start_time = time.time()
-  for i, (x, y) in enumerate(training_generator):
+  for i, (x, y) in enumerate(loader):
     j+=1
     if y.shape!=(batch_size,):
       continue
 
     y = one_hot(y, n_targets)
 
-    if mode=='ProxSR':
-      grads, aux = newgradmomentum(params, x, y ,prevgrad)
-      prevgrad=grads
-      params = update(params, grads, lr)
-
-    if mode=='sgd':
-      loss_,grads=value_and_grad_func(params,(x,y))
-      aux=dict(loss=loss_)
-      updates,optstate=opt.update(grads,optstate)
-      params=optax.apply_updates(params,updates)
-
     if mode=='kfac':
       key=rnd.split(key)[0]
-      params,optstate,aux=kfac_opt.step(params,optstate,key,batch=(x,y),global_step_int=j)
+      params,optstate,aux=optimizer.step(params,optstate,key,batch=(x,y),global_step_int=j)
+      loss_=float(aux['loss'])
+    else:
+      loss_,grad=valgradfn(params,x,y,prevgrad)
+      updates,optstate=optimizer.update(grad,optstate)
+      params=optax.apply_updates(params,updates)
+      prevgrad=grad
 
-    loss_=float(aux['loss'])
     accuracy_=accuracy(params, x, y)
 
     print(loss_)
