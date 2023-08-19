@@ -6,4 +6,9 @@ pip install --upgrade "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-re
 pip install torch==1.11.0 torchvision
 pip install optax flax kfac-jax
 
-python prox.py
+# make a file:
+# localconfig.py
+datasetpath='/tmp/'
+batch_size = 64
+
+python prox.py --mode ProxSR --dataset mnist --lr 0.1
