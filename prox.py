@@ -40,7 +40,7 @@ config=dict(
 ID=datetime.datetime.now().strftime('%m%d-%H%M%S')
 print(ID)
 
-logdir=f'logs/{ID}'
+logdir=f'{logdir}/{ID}'
 os.makedirs(logdir)
 json.dump(config,open(f'{logdir}/config.json','w'))
 
